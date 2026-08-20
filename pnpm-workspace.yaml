@@ -1,0 +1,5 @@
+allowBuilds:
+  sharp: true
+minimumReleaseAgeExclude:
+  - '@mermaid-js/parser@1.2.1'
+  - mermaid@11.17.0

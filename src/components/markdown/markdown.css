@@ -118,12 +118,24 @@
   background: transparent;
 }
 
-.mermaid-diagram svg {
+.mermaid-diagram--open {
+  overflow: visible;
+}
+
+.mermaid-diagram img {
   max-width: 100%;
   height: auto;
   display: block;
   margin: 0 auto;
-  background: transparent;
+  -webkit-user-drag: none;
+  user-select: all;
+}
+
+.mermaid-diagram--fullscreen img {
+  max-width: 90vw;
+  max-height: 90vh;
+  width: auto;
+  height: auto;
 }
 
 .mermaid-diagram--loading,

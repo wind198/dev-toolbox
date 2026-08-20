@@ -1,1052 +1,1183 @@
-# Software Requirements Specification (SRS)
+# RMS Enterprise Deployment & Software Distribution Architecture
 
-## 1. Product Overview
+| | |
+| --- | --- |
+| **Status** | Proposed |
+| **Version** | 1.0 |
+| **Date** | 2026-08-19 |
 
-### 1.1 Product
+## 1. Overview
 
-A polished, child-friendly digital jigsaw puzzle game.
+RMS (Robot Management System) is a centralized management platform for a client's robot fleet.
 
-The player selects a puzzle, sees the **completed puzzle image on the board**, then watches the pieces animate out of the completed board before solving the puzzle.
+RMS can be deployed in:
 
-The core experience is:
+- Cloud environments
+- Client-owned / on-premises infrastructure
+
+Each client receives an isolated RMS deployment running inside the client's private infrastructure.
+
+The architecture separates:
+
+- VSF software distribution / control plane
+- Client deployment / runtime plane
+- Application authorization plane
+
+The core architectural principle is:
+
+> VSF distributes software and release artifacts; the client controls deployment; RMS controls access to fleets and robots.
+
+The client infrastructure should not require VSF to have administrative access to the client's Kubernetes cluster.
+
+## 2. Architectural Goals
+
+### 2.1 Security
+
+- Client Kubernetes clusters remain under client control.
+- VSF does not require Kubernetes credentials for client clusters.
+- Client networks should not require inbound connectivity from VSF.
+- Image access must be authorized per client.
+- Client A must not be able to pull Client B's images.
+- Kubernetes should pull images only from the client's private registry.
+- Human users authenticate through the client's IdP.
+- RMS performs application-level authorization.
+- All credentials follow least privilege.
+
+### 2.2 Deployment isolation
+
+Each client should have independent:
+
+- Argo CD
+- Kubernetes cluster
+- Private registry
+- GitOps configuration
+- Registry credentials
+- Image authorization
+- RMS instance
+- Runtime data
+
+A problem in Client A's environment should not directly affect Client B.
+
+### 2.3 Operational requirements
+
+The architecture should support:
+
+- Client-controlled deployment
+- Client-specific RMS versions
+- Client-specific release approval
+- Reproducible deployments
+- Rollback
+- Auditability
+- Offline / on-prem environments
+- Centralized VSF software release management
+
+## 3. High-Level Architecture
 
 ```mermaid
 flowchart LR
-    A[Puzzle Selection] --> B[Completed Board Preview]
-    B --> C[Piece Extraction Animation]
-    C --> D[Puzzle Ready]
-    D --> E[Drag Piece]
-    E --> F{Correct Target?}
-    F -->|No| G[Return / Soft Feedback]
-    F -->|Yes| H[Snap Animation]
-    H --> I[Hit-to-Board Effect + Sound]
-    I --> J{All Pieces Placed?}
-    J -->|No| E
-    J -->|Yes| K[Completion Celebration]
+    subgraph VSF["VSF Private Infrastructure"]
+        SRC["RMS Source Repository"]
+        CI["CI/CD"]
+        JFROG["VSF JFrog Registry"]
+        GIT["Client GitOps / Helm Repository"]
+        ENT["Entitlement / License Service"]
+
+        SRC --> CI
+        CI --> JFROG
+        CI --> GIT
+        CI --> ENT
+    end
+
+    subgraph CLIENT["Client Private Infrastructure"]
+        ARGO["Argo CD"]
+        GITCLIENT["Git / Helm Configuration"]
+        SYNC["Registry Sync / Puller"]
+        REG["Client Private Registry"]
+        K8S["Kubernetes"]
+        RMS["RMS"]
+
+        ARGO --> GITCLIENT
+        ARGO --> K8S
+        SYNC --> REG
+        K8S --> REG
+        K8S --> RMS
+    end
+
+    GIT --> GITCLIENT
+    JFROG --> SYNC
+    ENT -. "license / entitlement" .-> RMS
 ```
 
-The product should feel **cute, polished, responsive, and forgiving**, rather than like a traditional desktop puzzle application.
+## 4. Trust Boundaries
 
----
-
-# 2. Goals
-
-## 2.1 Primary Goals
-
-1. Provide an intuitive jigsaw experience for children.
-2. Make piece dragging feel immediate and tactile.
-3. Make correct placement visually satisfying.
-4. Clearly communicate successful placement through animation and sound.
-5. Reduce frustration through forgiving snapping.
-6. Establish a reusable puzzle engine where new puzzle images can be added without changing gameplay code.
-7. Support multiple puzzle difficulties.
-8. Work well on touch devices and pointer/mouse devices.
-9. Keep the core gameplay functional without network connectivity.
-
-## 2.2 UX Goals
-
-The experience should communicate:
-
-* "This is my puzzle."
-* "This piece belongs here."
-* "I placed it correctly."
-* "I am making progress."
-* "I finished it."
-
-The player should not need to read instructions to understand the basic interaction.
-
----
-
-# 3. Target Users
-
-Primary audience:
-
-* Children approximately 4–8 years old.
-
-Secondary user:
-
-* Parent or guardian who selects or configures puzzles.
-
-The UI should therefore prioritize:
-
-* large interactive targets
-* clear visual hierarchy
-* minimal text
-* recognizable icons
-* friendly animation
-* forgiving interaction
-* no destructive failure states
-
----
-
-# 4. Product Scope
-
-## 4.1 MVP Features
-
-### Puzzle Library
-
-* Display available puzzles.
-* Display puzzle preview artwork.
-* Display puzzle difficulty.
-* Allow the player to select a puzzle.
-* Support unlocked/locked puzzle states if progression is enabled.
-
-### Puzzle Preview
-
-When a puzzle starts:
-
-1. Display the completed puzzle on the board.
-2. Allow the child to visually inspect the complete image.
-3. Hold the completed state for a short configurable duration.
-4. Animate puzzle pieces being removed from the board.
-5. Transition into the playable state.
-
-### Puzzle Gameplay
-
-* Display all puzzle pieces.
-* Randomize piece positions.
-* Allow dragging pieces.
-* Highlight the currently selected piece.
-* Detect proximity to the correct target.
-* Snap correctly positioned pieces into place.
-* Lock placed pieces.
-* Provide visual and audio feedback.
-* Detect puzzle completion.
-
-### Completion
-
-* Play a completion animation.
-* Provide positive visual/audio feedback.
-* Display replay and next-puzzle actions.
-* Persist basic completion state.
-
----
-
-# 5. Out of Scope for MVP
-
-The following should not be implemented unless product requirements change:
-
-* multiplayer
-* user accounts
-* online synchronization
-* leaderboards
-* social sharing
-* advertisements
-* purchases
-* procedural puzzle generation
-* realistic physics
-* piece rotation
-* competitive scoring
-* complex parental analytics
-* backend-dependent gameplay
-
----
-
-# 6. User Experience
-
-## 6.1 High-Level Game Flow
+The architecture contains three major trust boundaries.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> PuzzleSelection
+flowchart TB
+    VSF["VSF Trust Domain"]
+    DIST["Software Distribution Boundary"]
+    CLIENT["Client Trust Domain"]
+    APP["RMS Application Security Domain"]
 
-    PuzzleSelection --> Preview
-    Preview --> PieceExtraction
-
-    PieceExtraction --> Playing
-
-    Playing --> Playing: Incorrect placement
-    Playing --> Playing: Correct placement
-
-    Playing --> Completed: All pieces placed
-
-    Completed --> Playing: Replay
-    Completed --> PuzzleSelection: Next / Home
+    VSF --> DIST
+    DIST --> CLIENT
+    CLIENT --> APP
 ```
 
----
+### 4.1 VSF trust domain
 
-# 7. Puzzle Selection
+VSF controls:
 
-## 7.1 Requirements
+- RMS source code
+- CI/CD
+- Internal artifacts
+- JFrog
+- Release promotion
+- Client-specific release configuration
+- Entitlement / license information
 
-The puzzle selection screen SHALL:
+VSF does not control the client's Kubernetes cluster.
 
-* display available puzzles as large visual cards
-* prioritize artwork over text
-* support touch interaction
-* provide clear selected/pressed states
-* avoid small controls
+### 4.2 Client infrastructure trust domain
 
-Example:
+The client controls:
 
-```text
-┌─────────────────────────────────────────┐
-│                                         │
-│               🧩 PUZZLES                │
-│                                         │
-│      ┌───────┐   ┌───────┐   ┌───────┐ │
-│      │ 🦁    │   │ 🦕    │   │ 🚀    │ │
-│      │       │   │       │   │       │ │
-│      └───────┘   └───────┘   └───────┘ │
-│                                         │
-└─────────────────────────────────────────┘
-```
+- Kubernetes
+- Argo CD
+- Client registry
+- Registry credentials
+- Network policy
+- Kubernetes RBAC
+- Deployment approval
+- RMS runtime
 
-The UI should avoid requiring the child to read the puzzle name.
+VSF should not have administrative access to these resources.
 
----
+### 4.3 RMS application trust domain
 
-# 8. Completed Board Preview
+RMS controls:
 
-This is a key part of the product experience.
+- Fleet access
+- Robot access
+- Robot operations
+- Application roles
+- Resource-level authorization
+- Runtime entitlement validation
 
-When the child starts a puzzle, the board SHALL initially display the **fully assembled image**.
+Kubernetes RBAC should not be used to implement robot / fleet authorization.
 
-## 8.1 Preview Sequence
+## 5. GitOps Architecture
+
+**Decision:** Per-client Argo CD.
+
+Each client runs its own Argo CD.
 
 ```mermaid
-sequenceDiagram
-    participant UI
-    participant Game as Puzzle Engine
-    participant Animation
+flowchart LR
+    subgraph VSF["VSF"]
+        GIT["Client-specific GitOps Repository"]
+    end
 
-    UI->>Game: Start puzzle
-    Game->>UI: Render completed board
-    UI->>Animation: Play preview entrance
-    Animation-->>UI: Preview visible
+    subgraph CA["Client A"]
+        ARGO["Argo CD"]
+        K8S["Kubernetes"]
+        RMS["RMS"]
+    end
 
-    Note over UI: Hold completed board
-
-    UI->>Animation: Start piece extraction
-    Animation-->>UI: Pieces animate away
-
-    Animation->>Game: Extraction complete
-    Game->>Game: Shuffle pieces
-    Game->>UI: Enter PLAYING state
+    GIT -->|"HTTPS / Git pull"| ARGO
+    ARGO -->|"Kubernetes API"| K8S
+    K8S --> RMS
 ```
 
-## 8.2 Preview Duration
+### Rationale
 
-The completed image SHOULD remain visible long enough for the child to understand the puzzle.
+A centralized Argo CD would require VSF to possess credentials capable of controlling client Kubernetes clusters.
 
-Initial target:
+That creates this trust relationship:
 
-* approximately 2–3 seconds
+```mermaid
+flowchart TB
+    C["Client"]
+    A["VSF Argo CD"]
+    K["Client Kubernetes"]
 
-This value SHOULD be configurable.
-
-## 8.3 Preview Presentation
-
-The board should feel visually complete.
-
-Recommended effects:
-
-* subtle board entrance animation
-* gentle scale/opacity transition
-* slight ambient movement
-* no distracting effects before gameplay starts
-
----
-
-# 9. Piece Extraction Animation
-
-After the preview period, pieces SHALL visually separate from the completed board.
-
-The animation should make it obvious that:
-
-> "The puzzle is now being taken apart."
-
-The extraction SHOULD NOT simply hide the pieces.
-
-## 9.1 Expected Sequence
-
-```text
-Completed Puzzle
-       │
-       ▼
-Small pause
-       │
-       ▼
-Pieces visually separate
-       │
-       ├── slight lift
-       ├── scale/rotation
-       ├── movement outward
-       └── fade/transition
-       │
-       ▼
-Pieces reposition around board
-       │
-       ▼
-Gameplay starts
+    C -->|"trusts"| A
+    A -->|"cluster credentials"| K
 ```
 
-## 9.2 Requirements
+A compromise of VSF's Argo CD or its credentials could therefore become a compromise of the client's infrastructure.
 
-The animation SHALL:
+With per-client Argo CD:
 
-* preserve visual continuity between the completed board and pieces
-* make the transformation understandable
-* avoid making the child wait unnecessarily
-* finish before gameplay input is enabled
+```mermaid
+flowchart TB
+    C["Client"]
+    A["owns Argo CD"]
+    K["owns Kubernetes credentials"]
+    D["controls deployment"]
 
-During extraction:
+    C --> A
+    C --> K
+    C --> D
+```
 
-* puzzle pieces SHALL NOT be draggable
-* gameplay actions SHALL be ignored
-* completion logic SHALL be disabled
+VSF only provides desired state.
 
----
+This follows the principle:
 
-# 10. Gameplay Board
+> The owner of the runtime environment should own the deployment controller.
 
-The board SHALL provide a clear visual distinction between:
+## 6. GitOps Repository Model
 
-1. available pieces
-2. empty puzzle targets
-3. correctly placed pieces
-
-The target board MAY show subtle piece outlines or silhouettes.
+Each client has a dedicated GitOps repository or isolated repository path.
 
 Example:
 
 ```text
-┌───────────────────────────────┐
-│                               │
-│      ┌───┬───┬───┐            │
-│      │   │   │   │            │
-│      ├───┼───┼───┤            │
-│      │   │   │   │            │
-│      ├───┼───┼───┤            │
-│      │   │   │   │            │
-│      └───┴───┴───┘            │
-│                               │
-│  🧩     🧩        🧩          │
-│      🧩       🧩              │
-└───────────────────────────────┘
+rms-client-a-gitops
+├── base/
+│   ├── Chart.yaml
+│   └── templates/
+│
+└── environments/
+    └── production/
+        ├── values.yaml
+        └── release.yaml
 ```
 
-The exact visual style should be polished rather than resembling a debugging grid.
-
----
-
-# 11. Piece Interaction
-
-## 11.1 Dragging
-
-A child SHALL be able to:
-
-1. press/touch a piece
-2. move the piece
-3. release the piece
-
-The piece SHALL follow the pointer/touch with minimal perceived latency.
-
-The drag loop SHOULD remain entirely local:
+A stronger separation is:
 
 ```text
-Input
-  ↓
-Pointer/Touch Handler
-  ↓
-Piece Position
-  ↓
-Renderer
+VSF
+├── RMS Helm Chart
+└── Client A GitOps Repository
+       └── values / deployment configuration
 ```
 
-No network operation SHALL occur during dragging.
+The Helm chart contains the product deployment definition.
 
-## 11.2 Selected Piece
+The client GitOps repository contains environment-specific configuration.
 
-While dragging:
+Examples:
 
-* piece SHOULD visually rise above other pieces
-* piece MAY slightly scale up
-* piece MAY cast a stronger shadow
-* z-index/layer SHOULD move above other pieces
+```yaml
+image:
+  repository: client-registry.example.com/rms
+  digest: sha256:...
 
-Example:
+resources:
+  requests:
+    cpu: ...
+    memory: ...
 
-```text
-Normal:
-     🧩
-
-Dragging:
-       🧩
-      ↑
-   elevated
+ingress:
+  host: rms.client-a.internal
 ```
 
-The effect should communicate physical pickup without becoming exaggerated.
+## 7. Client-Controlled Deployment
 
----
-
-# 12. Placement Detection
-
-Each piece SHALL have a known target position.
-
-When released, the puzzle engine SHALL calculate the distance between:
-
-* current piece position
-* target position
-
-Example:
-
-```typescript
-const distance = Math.hypot(
-  piece.x - target.x,
-  piece.y - target.y
-);
-
-if (distance <= snapThreshold) {
-  snapPiece(piece);
-}
-```
-
-## 12.1 Snap Threshold
-
-The threshold SHALL be forgiving enough for children.
-
-It SHOULD be configurable based on:
-
-* board dimensions
-* piece size
-* difficulty
-* device resolution
-
-The threshold should not be a single hard-coded pixel value across all devices.
-
-A proportional model is preferable:
-
-```typescript
-const snapThreshold = piece.width * 0.35;
-```
-
-The exact value should be tuned through playtesting.
-
----
-
-# 13. Incorrect Placement
-
-Incorrect placement SHALL NOT create a harsh failure state.
-
-Recommended behavior:
-
-```text
-Drop
- ↓
-Incorrect
- ↓
-Small "soft" feedback
- ↓
-Piece returns to previous/free position
-```
-
-The piece SHOULD NOT:
-
-* flash red aggressively
-* play a failure sound
-* shake excessively
-* punish the player
-* block further interaction
-
-A subtle bounce-back or gentle repositioning is preferred.
-
----
-
-# 14. Correct Snap Experience
-
-Correct placement is a primary delight moment and SHOULD receive significantly more attention than incorrect placement.
-
-## 14.1 Snap Sequence
-
-Recommended sequence:
+Deployment should be pull-based.
 
 ```mermaid
 sequenceDiagram
-    participant Player
-    participant Piece
-    participant Engine
-    participant Effects
+    participant VSF as VSF Git
+    participant A as Client Argo CD
+    participant K as Client Kubernetes
 
-    Player->>Piece: Release
-    Piece->>Engine: Check target distance
-    Engine->>Engine: Within snap threshold
-
-    Engine->>Piece: Lock target
-    Piece->>Effects: Start snap animation
-
-    Effects->>Effects: Move to exact target
-    Effects->>Effects: Scale / bounce
-    Effects->>Effects: Board impact effect
-    Effects->>Effects: Play snap sound
-
-    Effects-->>Engine: Animation complete
-    Engine->>Engine: Mark piece placed
-    Engine->>Engine: Check completion
+    VSF->>A: Git repository available
+    A->>VSF: Pull desired state
+    A->>A: Detect new release
+    A->>K: Apply manifests
+    K->>K: Deploy RMS
 ```
 
-## 14.2 Snap Animation
+VSF does not directly call:
 
-The piece SHOULD:
+- Client Kubernetes API
 
-1. move quickly toward the exact target
-2. slightly overshoot or compress
-3. settle into position
-4. create a small impact/bounce
-5. visually merge with the board
+The client can decide:
 
-A useful animation model:
+- automatic deployment
+- manual approval
+- maintenance window
+- rollback
+
+## 8. Image Distribution Architecture
+
+The image distribution path is intentionally different from the Kubernetes deployment path.
+
+```mermaid
+flowchart LR
+    JFROG["VSF JFrog"]
+    AUTH["Client-specific Registry Identity"]
+    SYNC["Client Registry Sync / Puller"]
+    REG["Client Private Registry"]
+    K8S["Kubernetes"]
+
+    JFROG -->|"authenticated pull"| AUTH
+    AUTH --> SYNC
+    SYNC --> REG
+    K8S -->|"local image pull"| REG
+```
+
+### Important distinction
+
+Kubernetes does not pull from VSF JFrog.
+
+Instead:
+
+```mermaid
+flowchart TB
+    J["VSF JFrog"]
+    R["Client Private Registry"]
+    K["Kubernetes"]
+
+    J -->|"authorized client sync"| R
+    R -->|"local pull"| K
+```
+
+This gives the client a completely local runtime dependency.
+
+## 9. Why Use a Client Private Registry?
+
+The client registry provides several benefits:
+
+### Network isolation
+
+Kubernetes does not need Internet access to VSF JFrog.
+
+### Runtime independence
+
+After an image is synchronized:
+
+```mermaid
+flowchart TB
+    K["Client Kubernetes"]
+    R["Client Registry"]
+
+    K --> R
+```
+
+The deployment does not depend on the VSF registry being reachable.
+
+### Security boundary
+
+VSF controls what enters the client environment.
+
+The client controls what happens after the image enters its infrastructure.
+
+### Performance
+
+Large image pulls happen inside the client's network.
+
+## 10. Image Authorization
+
+Image authorization is a first-class security requirement.
+
+Client A must not be able to use Client B's registry credentials to obtain Client B's artifacts.
+
+Recommended model:
+
+```mermaid
+flowchart LR
+    A["Client A Registry Sync"]
+    B["Client B Registry Sync"]
+    TA["Client A Scoped Token"]
+    TB["Client B Scoped Token"]
+    J["VSF JFrog"]
+
+    A --> TA
+    TA --> J
+    B --> TB
+    TB --> J
+```
+
+JFrog permissions should be scoped approximately as:
+
+**Client A identity**
 
 ```text
-dragged position
-      ↓
-fast movement to target
-      ↓
-small overshoot
-      ↓
-settle
+READ:    client-a/*
+WRITE:   none
+DELETE:  none
+ADMIN:   none
 ```
 
-Avoid a slow linear transition. It will feel disconnected from the user's action.
+**Client B identity**
 
----
+```text
+READ:    client-b/*
+WRITE:   none
+DELETE:  none
+ADMIN:   none
+```
 
-# 15. Hit-to-Board Effect
+Therefore:
 
-The snap SHALL include a clear **hit-to-board** visual effect.
+| Request | Result |
+| --- | --- |
+| Client A → `client-a/rms:1.8.2` | ALLOW |
+| Client A → `client-b/rms:1.8.2` | DENY |
+| Client A → `internal/*` | DENY |
 
-The purpose is to communicate:
+## 11. Image Credential Separation
 
-> "This piece belongs here."
+There are two independent credential boundaries.
 
-Possible effects:
+### Credential 1: Client registry synchronization
 
-* subtle board ripple
-* small impact ring
-* short particle burst
-* tiny scale pulse on neighboring board area
-* piece shadow compression
-* brief highlight around the connection
+```mermaid
+sequenceDiagram
+    participant S as Client Registry Sync
+    participant J as VSF JFrog
 
-The effect SHOULD originate from the piece's final target position.
+    S->>J: Authenticate using Client A scoped identity
+    J->>J: Authorize repository
+    J-->>S: RMS image
+```
+
+This credential belongs to the client-side synchronization mechanism.
+
+It should be:
+
+- client-specific
+- read-only
+- scoped
+- revocable
+- preferably short-lived
+
+### Credential 2: Kubernetes → Client Registry
+
+```mermaid
+sequenceDiagram
+    participant K as Kubernetes
+    participant R as Client Registry
+
+    K->>R: Authenticate using local registry credential
+    R-->>K: RMS image
+```
+
+This credential:
+
+- belongs to the client
+- stays inside the client environment
+- is not shared with VSF
+- is unrelated to the VSF JFrog credential
+
+Argo CD does not need the VSF JFrog credential.
+
+Argo CD manages Kubernetes manifests; Kubernetes / kubelet performs the image pull.
+
+## 12. Image Release and Promotion
+
+Do not allow clients to freely consume arbitrary images from the internal VSF registry.
+
+Use a release / promotion process.
+
+```mermaid
+flowchart LR
+    SRC["RMS Source"]
+    BUILD["CI Build"]
+    INTERNAL["Internal JFrog"]
+    QA["QA / Security"]
+    PROMOTE["Release / Promotion"]
+    CLIENTA["Client A Repository"]
+    CLIENTB["Client B Repository"]
+
+    SRC --> BUILD
+    BUILD --> INTERNAL
+    INTERNAL --> QA
+    QA --> PROMOTE
+    PROMOTE --> CLIENTA
+    PROMOTE --> CLIENTB
+```
 
 Example:
 
 ```text
-             🧩
-              ↓
-        ┌───────────┐
-        │   target  │
-        │    ✦      │
-        └───────────┘
-           ╲  │  ╱
-            ╲ │ ╱
-             ✨
+RMS 1.8.2
+
+Client A: allowed
+Client B: allowed
+Client C: not allowed
 ```
 
-The effect SHOULD be short enough that repeated placements do not become annoying.
+Only the entitled client repository receives the artifact.
 
----
+This provides a second authorization layer:
 
-# 16. Snap Sound
+```text
+Registry ACL
++
+Release entitlement
+```
 
-Every successful placement SHOULD play a short tactile sound.
+## 13. Image Version Authorization
 
-Sound characteristics:
+Use explicit release promotion.
 
-* short
-* bright
-* pleasant
-* clearly different from failure feedback
-* low enough to avoid becoming tiring
+Avoid:
 
-The sound SHALL be triggered by successful placement rather than merely by pointer release.
+```yaml
+image:
+  tag: latest
+```
 
-Incorrect placement SHOULD either use no sound or an extremely subtle feedback sound.
+Prefer:
 
-Audio SHOULD NOT block gameplay.
+```yaml
+image:
+  repository: client-registry.example.com/rms
+  digest: sha256:abcdef...
+```
 
----
+The client GitOps repository therefore records the exact artifact deployed.
 
-# 17. Audio Requirements
+Example:
 
-The system SHOULD support:
+```text
+Client A GitOps
 
-* snap sound
-* completion sound
-* optional background music
-* optional UI interaction sounds
+RMS:
+    version: 1.8.2
+    digest: sha256:abcdef...
+```
 
-Settings SHOULD allow audio to be disabled.
+This provides:
 
-Audio playback failures SHALL NOT break gameplay.
+- reproducibility
+- rollback
+- auditability
+- deterministic deployment
+
+## 14. Image Integrity
+
+**Selected decision:** Image digest pinning.
+
+```mermaid
+flowchart LR
+    IMAGE["RMS Image"]
+    DIGEST["SHA-256 Digest"]
+    GIT["Client GitOps"]
+    K8S["Kubernetes"]
+
+    IMAGE --> DIGEST
+    DIGEST --> GIT
+    GIT --> K8S
+```
+
+The GitOps configuration references the immutable digest.
 
 For example:
 
-```typescript
-try {
-  await audio.play("piece-snap");
-} catch {
-  // Audio failure must not affect puzzle state.
-}
+```yaml
+image:
+  repository: registry.client-a.local/rms
+  digest: sha256:abcdef123456...
 ```
 
-Game state must remain authoritative.
+A future enhancement can add image signing and admission verification.
 
----
+## 15. Network Architecture
 
-# 18. Puzzle State Model
+The default communication model is client-initiated outbound communication.
 
-The puzzle engine SHOULD have an explicit state machine.
+```mermaid
+flowchart LR
+    subgraph VSF["VSF Private Infrastructure"]
+        J["JFrog"]
+        G["Git"]
+        E["Entitlement Service"]
+    end
+
+    subgraph CLIENT["Client Private Infrastructure"]
+        S["Registry Sync"]
+        A["Argo CD"]
+        K["Kubernetes"]
+        R["RMS"]
+        CR["Client Registry"]
+    end
+
+    S -->|"Outbound HTTPS + TLS/mTLS"| J
+    A -->|"Outbound HTTPS"| G
+    R -->|"Outbound HTTPS + TLS/mTLS"| E
+
+    S --> CR
+    K --> CR
+    K --> R
+```
+
+The desired firewall posture is:
+
+| Direction | Policy |
+| --- | --- |
+| Client → VSF | ALLOW |
+| VSF → Client | DENY |
+
+where practical.
+
+## 16. mTLS
+
+For machine-to-machine communication, use TLS with mutual authentication where supported.
+
+```mermaid
+sequenceDiagram
+    participant C as Client Service
+    participant V as VSF Service
+
+    C->>V: TLS connection + client certificate
+    V->>C: Server certificate
+    V->>V: Validate client identity
+    C->>C: Validate VSF identity
+    C->>V: Authorized request
+    V-->>C: Response
+```
+
+The identity should represent the service, not a human user.
+
+For example:
+
+```text
+client-a-registry-sync
+```
+
+rather than:
+
+```text
+admin@client-a.com
+```
+
+## 17. VPN
+
+A VPN is not required by the base architecture.
+
+Default:
+
+```mermaid
+flowchart TB
+    C["Client"]
+    V["VSF"]
+
+    C -->|"outbound HTTPS"| V
+```
+
+A VPN / private network connection can be supported when required by client IT policy.
+
+However, VPN should not automatically imply that VSF can access:
+
+- Kubernetes API
+- SSH
+- Node networks
+- Internal services
+
+Network connectivity and authorization must remain separate.
+
+## 18. Human Authentication
+
+**Selected decision:** Client's existing IdP.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant IdP as Client IdP
+    participant RMS as RMS
+
+    User->>RMS: Login
+    RMS->>IdP: Authentication request
+    IdP-->>RMS: Identity / token
+    RMS->>RMS: Resolve application permissions
+    RMS-->>User: Authorized RMS session
+```
+
+RMS should not need to own the client's user directory.
+
+The client's IdP remains responsible for:
+
+- user identity
+- authentication
+- MFA
+- account lifecycle
+
+RMS remains responsible for:
+
+- roles
+- fleet permissions
+- robot permissions
+- operational permissions
+
+## 19. Application Authorization
+
+Authentication and authorization are separate.
+
+| Concept | Question |
+| --- | --- |
+| Authentication | Who are you? |
+| Authorization | What are you allowed to do? |
 
 Example:
 
-```typescript
-type PuzzlePhase =
-  | "preview"
-  | "extracting"
-  | "playing"
-  | "completed";
+```text
+User:  alice@client-a.com
+Role:  FleetOperator
+Scope: fleet-a
 ```
 
-Each piece SHOULD have independent state:
+Then:
 
-```typescript
-type PieceState = {
-  id: string;
-  targetX: number;
-  targetY: number;
-  x: number;
-  y: number;
-  placed: boolean;
-  dragging: boolean;
-};
-```
+| Request | Result |
+| --- | --- |
+| `GET /fleets/fleet-a/robots` | ALLOW |
+| `GET /fleets/fleet-b/robots` | DENY |
+| `POST /robots/robot-123/teleoperation` | depends on operation permission |
 
-The overall puzzle state SHOULD conceptually be:
+## 20. RMS Authorization Model
+
+Recommended model:
 
 ```text
-PuzzleState
-├── phase
-├── puzzle definition
-├── pieces[]
-├── selectedPieceId
-├── placedPieceCount
-├── hintsUsed
-└── startedAt
+RBAC
++
+resource-level authorization
 ```
-
-The UI should render from this state rather than independently deciding whether a puzzle is complete.
-
----
-
-# 19. Puzzle Generation
-
-A puzzle definition SHOULD be independent from the current game session.
 
 Conceptually:
 
-```typescript
-type PuzzleDefinition = {
-  id: string;
-  image: string;
-  rows: number;
-  columns: number;
-  difficulty: "easy" | "medium" | "hard";
-};
+```mermaid
+flowchart TB
+    USER["Authenticated User"]
+    ROLE["Role"]
+    PERM["Permissions"]
+    RESOURCE["Resource Scope"]
+    POLICY["Authorization Policy"]
+    API["RMS API"]
+
+    USER --> ROLE
+    ROLE --> PERM
+    USER --> RESOURCE
+    PERM --> POLICY
+    RESOURCE --> POLICY
+    POLICY --> API
 ```
 
-A runtime session derives pieces from the definition:
+Example:
 
 ```text
-PuzzleDefinition
-       ↓
-Image dimensions
-       ↓
-Grid
-       ↓
-Piece definitions
-       ↓
-Target coordinates
-       ↓
-Initial positions
-       ↓
-Game session
+User
+  └── Fleet Operator
+
+Permissions
+  ├── fleet.read
+  ├── robot.read
+  └── robot.teleoperate
+
+Resource scope
+  └── fleet-a
 ```
 
-Adding a new puzzle should primarily require adding an asset and metadata.
+This should be enforced by RMS.
 
----
+Kubernetes RBAC should not be used for this purpose.
 
-# 20. Difficulty
+## 21. VSF Does Not Access Client RMS
 
-MVP difficulty SHALL primarily be controlled by piece count.
+**Selected decision:** No direct VSF → Client RMS access.
 
-Suggested initial levels:
+Therefore:
 
-| Difficulty | Pieces |
-| ---------- | -----: |
-| Easy       |      4 |
-| Medium     |      9 |
-| Hard       |     16 |
+```mermaid
+flowchart TB
+    VSF["VSF"]
+    RMS["Client RMS"]
 
-Future levels may support:
-
-* 25 pieces
-* 36 pieces
-* 49 pieces
-* irregular piece shapes
-* hidden reference image
-* piece rotation
-
-These are outside MVP.
-
----
-
-# 21. Completion Detection
-
-A puzzle SHALL be considered complete when every piece is locked into its correct target.
-
-The preferred check is state-based:
-
-```typescript
-const completed =
-  pieces.length > 0 &&
-  pieces.every(piece => piece.placed);
+    VSF -.->|"no direct connection"| RMS
 ```
 
-The system SHOULD NOT rely on:
+This keeps the architecture simpler and maintains the client's private network boundary.
 
-* counting pointer events
-* animation callbacks alone
-* number of drag operations
+If centralized monitoring or support is required later, introduce a client-initiated telemetry / control channel rather than exposing the client network to VSF.
 
-Animation completion and game-state completion should remain separate concerns.
+## 22. Runtime Entitlement
 
----
+Registry authorization answers:
 
-# 22. Completion Experience
+> Is this client allowed to download this image?
 
-When the final piece is placed:
+It does not answer:
+
+> Is this RMS installation authorized to run?
+
+These are different problems.
+
+For environments where software entitlement / licensing matters, use a signed entitlement.
+
+```mermaid
+sequenceDiagram
+    participant VSF as VSF Entitlement Service
+    participant RMS as Client RMS
+
+    RMS->>VSF: Request entitlement
+    VSF->>VSF: Validate client
+    VSF-->>RMS: Signed entitlement
+    RMS->>RMS: Verify signature
+    RMS->>RMS: Validate product/version/features
+```
+
+For disconnected environments, RMS should be capable of validating a previously issued signed entitlement offline.
+
+## 23. Recommended Entitlement Model
+
+An entitlement can conceptually contain:
+
+```yaml
+client_id: client-a
+product: rms
+edition: enterprise
+
+version:
+  min: 1.0
+  max: 1.x
+
+features:
+  - fleet_management
+  - telemetry
+  - robot_operations
+
+expires_at: ...
+license_id: ...
+```
+
+The actual format should be signed cryptographically.
+
+The client RMS only needs the VSF public verification key to validate the signature.
+
+## 24. Complete Deployment Flow
+
+```mermaid
+sequenceDiagram
+    participant SRC as RMS Source
+    participant CI as VSF CI/CD
+    participant J as VSF JFrog
+    participant G as Client GitOps
+    participant S as Client Registry Sync
+    participant R as Client Registry
+    participant A as Client Argo CD
+    participant K as Kubernetes
+    participant RMS as RMS
+
+    SRC->>CI: Source change
+    CI->>CI: Build and test
+    CI->>J: Publish immutable image
+    CI->>J: Create release
+    CI->>G: Update approved release configuration
+
+    S->>J: Authenticate as client-specific identity
+    J->>J: Check client entitlement
+    J-->>S: Authorized image
+    S->>R: Store image locally
+
+    A->>G: Pull desired state
+    A->>K: Apply RMS manifests
+    K->>R: Pull image
+    R-->>K: RMS image
+    K->>RMS: Start RMS
+
+    RMS->>RMS: Validate runtime entitlement
+```
+
+## 25. Complete Security Model
+
+```mermaid
+flowchart TB
+    USER["Client User"]
+    IDP["Client IdP"]
+    RMS["Client RMS"]
+
+    VSF["VSF"]
+    JFROG["VSF JFrog"]
+    ENT["Entitlement Service"]
+
+    SYNC["Client Registry Sync"]
+    REG["Client Private Registry"]
+    ARGO["Client Argo CD"]
+    K8S["Client Kubernetes"]
+
+    USER --> IDP
+    IDP --> RMS
+
+    SYNC -->|"mTLS + scoped credential"| JFROG
+    JFROG -->|"authorized image"| SYNC
+    SYNC --> REG
+
+    ARGO -->|"Git pull"| VSF
+    ARGO --> K8S
+    K8S -->|"local pull"| REG
+    K8S --> RMS
+
+    RMS -->|"optional outbound"| ENT
+    RMS --> AUTHZ["RMS RBAC + Resource Authorization"]
+```
+
+## 26. Credential Ownership
+
+| Credential | Owner | Used by | Target | Scope |
+| --- | --- | --- | --- | --- |
+| VSF CI credential | VSF | CI/CD | JFrog | Publish images |
+| Client JFrog pull credential | Client | Registry Sync | VSF JFrog | Read client artifacts only |
+| Client registry credential | Client | Kubernetes | Client Registry | Read required images |
+| Git credential | Client / Argo CD | Argo CD | Git repository | Read client GitOps config |
+| Kubernetes credential | Client | Argo CD | Client Kubernetes | Required namespaces / resources |
+| User identity | Client IdP | User | RMS | Authentication |
+| Runtime entitlement | VSF | RMS | Local RMS | Product / version / features |
+
+No credential should cross trust boundaries unnecessarily.
+
+## 27. Failure Scenarios
+
+### VSF JFrog unavailable
+
+Existing client deployments should continue running.
+
+```mermaid
+flowchart TB
+    R["Client Registry"]
+    K["Kubernetes"]
+    RMS["RMS"]
+
+    R --> K
+    K --> RMS
+```
+
+Only new image synchronization is affected.
+
+### VSF Git unavailable
+
+Existing RMS deployment continues running.
+
+Argo CD retains the last successfully synchronized desired state.
+
+### Client loses Internet access
+
+Existing RMS should continue operating if the required runtime dependencies are local.
+
+The client cannot:
+
+- obtain new releases
+- synchronize new images
+- refresh online entitlement
+
+unless the architecture supports offline release / license mechanisms.
+
+### Client registry unavailable
+
+Kubernetes cannot start a new pod requiring an image not already cached locally.
+
+Existing running containers are generally unaffected until restart / replacement requires the image.
+
+## 28. Rollback
+
+Because images are immutable and GitOps is declarative:
+
+```mermaid
+flowchart LR
+    subgraph Current["Current"]
+        C["RMS"]
+        CB["sha256:BBB"]
+        C --> CB
+    end
+
+    subgraph Rollback["Rollback"]
+        R["RMS"]
+        RA["sha256:AAA"]
+        R --> RA
+    end
+```
+
+Rollback consists primarily of reverting the GitOps release reference.
+
+## 29. Client Isolation
+
+The architecture should maintain isolation at multiple levels.
+
+```mermaid
+flowchart TB
+    VSF["VSF"]
+
+    CA["Client A"]
+    CB["Client B"]
+
+    GA["Git Repo A"]
+    GB["Git Repo B"]
+
+    JA["JFrog ACL A"]
+    JB["JFrog ACL B"]
+
+    RA["Registry A"]
+    RB["Registry B"]
+
+    KA["K8s A"]
+    KB["K8s B"]
+
+    RMSA["RMS A"]
+    RMSB["RMS B"]
+
+    VSF --> CA
+    VSF --> CB
+
+    CA --> GA --> JA --> RA --> KA --> RMSA
+    CB --> GB --> JB --> RB --> KB --> RMSB
+```
+
+A Client A identity must never be reusable for Client B.
+
+## 30. Security Principles
+
+The architecture follows these principles:
+
+### Least privilege
+
+Every identity receives only the permissions required for its function.
+
+### Client ownership
+
+The client owns its runtime infrastructure and Kubernetes credentials.
+
+### Pull over push
+
+Client environments initiate software distribution whenever possible.
+
+### No unnecessary inbound connectivity
+
+VSF should not need direct access into client private networks.
+
+### Separation of concerns
 
 ```text
-Final piece
-    ↓
-Snap animation
-    ↓
-Hit-to-board effect
-    ↓
-Short pause
-    ↓
-Completion celebration
+Network security
+    ≠
+Registry authorization
+    ≠
+Kubernetes authorization
+    ≠
+RMS authorization
 ```
 
-The final placement SHOULD feel slightly more special than normal placements.
+### Immutable artifacts
 
-Possible effects:
+Use image digests rather than mutable tags.
 
-* board-wide glow
-* confetti/particles
-* character reaction
-* completion sound
-* gentle celebratory animation
+### Explicit promotion
 
-The celebration SHOULD remain appropriate for children and not overwhelm the puzzle artwork.
+A client receives only explicitly authorized releases.
 
----
+### Independent credentials
 
-# 23. Navigation After Completion
+Client A and Client B have completely separate identities and credentials.
 
-The completion screen SHOULD provide:
+### Defense in depth
+
+Image authorization, runtime entitlement, and RMS authorization solve different security problems.
+
+## 31. Final Recommended Architecture Decisions
+
+| # | Decision | Final |
+| --- | --- | --- |
+| 1 | GitOps controller | Per-client Argo CD |
+| 2 | Helm configuration | VSF base chart + client-specific values / GitOps |
+| 3 | Image distribution | Client pulls / syncs VSF → Client Registry |
+| 4 | Image authorization | Per-client identity + ACL + entitlement / promotion |
+| 5 | Image version authorization | Explicitly promoted releases |
+| 6 | Communication direction | Client → VSF outbound |
+| 7 | Network security | HTTPS + mTLS for service communication |
+| 8 | Runtime registry | Client private registry |
+| 9 | JFrog credential | Per-client scoped read-only credential |
+| 10 | Runtime entitlement | Hybrid online / offline signed entitlement |
+| 11 | VSF → Client RMS | No direct access |
+| 12 | Human authentication | Client IdP |
+| 13 | Application authorization | RMS RBAC + resource-level authorization |
+| 14 | Client isolation | Per-client Git + image repository / ACL |
+| 15 | Deployment approval | Configurable per client |
+| 16 | Image integrity | Immutable image digest |
+
+## 32. Target Architecture
+
+```mermaid
+flowchart TB
+    subgraph VSF["VSF Private Infrastructure"]
+        SRC["RMS Source"]
+        CI["CI/CD"]
+        INT["Internal JFrog"]
+        REL["Release / Promotion"]
+        DIST["Client Distribution Repository"]
+        GIT["Client GitOps Repository"]
+        ENT["Entitlement Service"]
+
+        SRC --> CI
+        CI --> INT
+        INT --> REL
+        REL --> DIST
+        REL --> GIT
+        REL --> ENT
+    end
+
+    subgraph CLIENT["Client Private Infrastructure"]
+        SYNC["Registry Sync"]
+        REG["Private Registry"]
+        ARGO["Argo CD"]
+        K8S["Kubernetes"]
+        RMS["RMS"]
+        IDP["Client IdP"]
+
+        SYNC --> REG
+        ARGO --> K8S
+        K8S --> REG
+        K8S --> RMS
+        IDP --> RMS
+    end
+
+    DIST --> SYNC
+    GIT --> ARGO
+    ENT -.-> RMS
+```
+
+### Core architectural contract
 
 ```text
-        🎉
+VSF
+ ├── builds RMS
+ ├── stores artifacts
+ ├── promotes releases
+ ├── authorizes client image distribution
+ └── issues software entitlements
 
-    Puzzle Complete!
+Client
+ ├── owns Argo CD
+ ├── owns Kubernetes
+ ├── owns private registry
+ ├── controls deployment
+ ├── controls deployment approval
+ └── owns network / security policy
 
-    [ Replay ]
-
-    [ Next Puzzle ]
-
-    [ Home ]
+RMS
+ ├── authenticates users through Client IdP
+ ├── authorizes users against fleets / robots
+ └── validates runtime entitlement
 ```
 
-The primary action should be visually obvious.
+The resulting architecture has a clean trust model:
 
-If there is no next puzzle:
+```mermaid
+flowchart LR
+    subgraph ST["SOFTWARE TRUST"]
+        VSF["VSF"] --> C1["Client"]
+    end
 
-```text
-    [ Replay ]
+    subgraph DT["DEPLOYMENT TRUST"]
+        C2["Client"] --> C3["Client"]
+    end
 
-    [ Choose Another ]
+    subgraph AT["APPLICATION TRUST"]
+        U["User"] --> RMS["RMS"]
+    end
 ```
 
----
-
-# 24. Progress Persistence
-
-MVP progress MAY persist locally.
-
-Minimum progress model:
-
-```typescript
-type PuzzleProgress = {
-  puzzleId: string;
-  completed: boolean;
-  completedCount: number;
-};
-```
-
-Progress persistence SHALL NOT be required for the core gameplay loop.
-
-If persistence fails, the child should still be able to play.
-
----
-
-# 25. Responsive Layout
-
-The game SHOULD support:
-
-* phone
-* tablet
-* desktop browser
-
-Tablet/touch should be considered the primary experience.
-
-The board SHOULD maintain its intended aspect ratio.
-
-Piece coordinates SHOULD be represented in board-relative coordinates rather than hard-coded screen coordinates.
-
-For example:
-
-```typescript
-type BoardPosition = {
-  x: number; // normalized or board-local
-  y: number;
-};
-```
-
-This prevents puzzle behavior from changing when the viewport changes.
-
----
-
-# 26. Interaction Constraints
-
-The game SHALL:
-
-* prevent dragging multiple pieces simultaneously
-* prevent dragging already placed pieces
-* prevent input during preview/extraction
-* prevent accidental navigation during drag
-* maintain the selected piece above other pieces
-* cleanly terminate a drag if the pointer/touch leaves the board
-
-A piece should never remain permanently "dragging" because a pointer-up event was lost.
-
----
-
-# 27. Performance Requirements
-
-The core drag interaction SHALL target smooth rendering.
-
-Requirements:
-
-* no network calls during dragging
-* no expensive image processing on every pointer movement
-* no unnecessary global state updates
-* avoid allocating large temporary objects inside high-frequency pointer handlers
-* pre-load puzzle assets before gameplay
-* pre-load important audio assets where practical
-
-The game should remain responsive with at least **16 pieces** in the MVP.
-
-The architecture SHOULD not prevent future support for approximately 50–64 pieces.
-
----
-
-# 28. Asset Requirements
-
-Each puzzle requires:
-
-* source image
-* puzzle metadata
-* optional preview thumbnail
-
-Optional:
-
-* completion artwork
-* puzzle-specific sounds
-* decorative UI assets
-
-Assets SHOULD be loaded before the puzzle enters the playable state.
-
-Gameplay should not begin while required visual assets are still loading.
-
----
-
-# 29. Error Handling
-
-Failures should degrade gracefully.
-
-### Image loading failure
-
-Show a recoverable error state rather than a broken board.
-
-### Audio failure
-
-Continue gameplay without audio.
-
-### Persistence failure
-
-Continue gameplay and treat progress as temporarily unavailable.
-
-### Interrupted drag
-
-Restore the piece to a valid position.
-
-### Application resize during gameplay
-
-Recalculate rendering coordinates without corrupting piece state.
-
----
-
-# 30. Accessibility / Parent Controls
-
-MVP should include:
-
-* sound on/off
-* music on/off if music exists
-* sufficient contrast between pieces and board
-* large touch targets
-* no critical information conveyed only through sound
-
-Future versions may add:
-
-* reduced-motion mode
-* larger pieces
-* high-contrast mode
-* accessibility-focused difficulty settings
-
----
-
-# 31. Analytics
-
-Analytics are not required for the core MVP.
-
-If analytics are introduced, useful events include:
-
-```text
-puzzle_started
-puzzle_completed
-piece_placed
-piece_misplaced
-hint_used
-puzzle_replayed
-```
-
-Avoid collecting unnecessary child-identifying information.
-
-Analytics should never sit on the critical gameplay path.
-
----
-
-# 32. Non-Functional UX Requirements
-
-The product SHOULD feel:
-
-* polished
-* playful
-* predictable
-* responsive
-* forgiving
-* visually coherent
-
-Animation should support interaction rather than become decoration.
-
-Particularly important:
-
-> A child should always understand what just happened.
-
-For every interaction, there should be a clear visual result.
-
----
-
-# 33. MVP Acceptance Criteria
-
-A puzzle is considered playable when:
-
-* [ ] Child can select a puzzle without reading instructions.
-* [ ] Completed puzzle image appears before gameplay.
-* [ ] Completed image remains visible for the configured preview duration.
-* [ ] Pieces visibly extract from the completed board.
-* [ ] Pieces become interactive only after extraction finishes.
-* [ ] Child can drag pieces with touch/pointer input.
-* [ ] Dragged piece appears above other pieces.
-* [ ] Correct placement is detected using a forgiving threshold.
-* [ ] Correct piece snaps to its exact target.
-* [ ] Snap includes a polished animation.
-* [ ] Snap produces a clear board-impact/hit effect.
-* [ ] Successful placement plays a short sound when audio is enabled.
-* [ ] Correctly placed pieces become locked.
-* [ ] Incorrect placement does not create a punitive experience.
-* [ ] Final piece triggers completion detection.
-* [ ] Completion produces a distinct celebration.
-* [ ] Child can replay the puzzle.
-* [ ] Child can select another puzzle.
-* [ ] Basic completion progress can persist locally.
-* [ ] Gameplay remains functional when audio or persistence fails.
-* [ ] Resizing the viewport does not corrupt puzzle state.
-
----
-
-# 34. Recommended MVP Product Boundary
-
-The first implementation should focus on this exact loop:
-
-```text
-                    ┌─────────────────┐
-                    │ Puzzle Library  │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │ Complete Image  │
-                    │    Preview      │
-                    └────────┬────────┘
-                             │
-                         2–3 sec
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │ Piece Extraction│
-                    │    Animation    │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   PLAYING       │
-                    │                 │
-                    │ Drag → Drop     │
-                    │      ↓          │
-                    │   Snap/Return   │
-                    │      ↓          │
-                    │  Hit + Sound    │
-                    └────────┬────────┘
-                             │
-                         all placed
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │   Celebration   │
-                    │                 │
-                    │ Replay / Next   │
-                    └─────────────────┘
-```
-
-The **highest-priority engineering problem** is not the puzzle catalog or navigation. It is making the **piece interaction loop** feel excellent:
-
-**pick up → drag → release → detect → snap → hit effect → sound → lock**
-
-That loop should be architected independently from the surrounding UI so it can be tuned heavily without rewriting the rest of the application.
+Most importantly, VSF never needs Kubernetes administrator credentials for the client's cluster, and a client's registry synchronization credential is scoped so it cannot retrieve arbitrary VSF images.

@@ -9,9 +9,21 @@ export async function ensureMermaidInitialized(): Promise<
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      htmlLabels: false,
+      fontFamily: "Arial, Helvetica, sans-serif",
       theme: "base",
       themeVariables: {
-        background: "transparent",
+        lineColor: "#334155",
+        primaryTextColor: "#0f172a",
+        fontFamily: "Arial, Helvetica, sans-serif",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: {
+        htmlLabels: false,
+        useMaxWidth: false,
+      },
+      sequence: {
+        useMaxWidth: false,
       },
     });
     initialized = true;

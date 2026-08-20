@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MarkdownRenderer } from "@/src/components/markdown/MarkdownRenderer";
 
-const { mockRender } = vi.hoisted(() => ({
+const { mockRender, mockSvgToPng } = vi.hoisted(() => ({
   mockRender: vi.fn(),
+  mockSvgToPng: vi.fn(),
 }));
 
 vi.mock("mermaid", () => ({
@@ -20,10 +22,20 @@ vi.mock("@/src/lib/mermaid-init", () => ({
   }),
 }));
 
+vi.mock("@/src/lib/mermaid-svg", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/src/lib/mermaid-svg")>();
+  return {
+    ...actual,
+    svgToPngDataUrl: mockSvgToPng,
+  };
+});
+
 describe("MarkdownRenderer", () => {
   beforeEach(() => {
     mockRender.mockReset();
     mockRender.mockResolvedValue({ svg: "<svg data-testid='mermaid-svg'></svg>" });
+    mockSvgToPng.mockReset();
+    mockSvgToPng.mockResolvedValue("data:image/png;base64,AAAA");
   });
 
   it("renders headings and paragraphs", () => {
@@ -61,6 +73,10 @@ describe("MarkdownRenderer", () => {
     expect(mockRender.mock.calls[0][1]).toContain("flowchart LR");
     expect(document.querySelector("pre .mermaid-diagram")).not.toBeInTheDocument();
     expect(document.querySelector(".mermaid-diagram")).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: "Mermaid diagram" })).toHaveAttribute(
+      "src",
+      "data:image/png;base64,AAAA",
+    );
   });
 
   it("renders normal fenced code as pre/code, not Mermaid", () => {
@@ -90,6 +106,34 @@ describe("MarkdownRenderer", () => {
     });
 
     expect(mockRender.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("shows mermaid fullscreen overlay on hover button click and closes on Escape", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MarkdownRenderer
+        content={"```mermaid\nflowchart LR\n    A --> B\n```"}
+      />,
+    );
+
+    const expand = await screen.findByRole("button", { name: "View fullscreen" });
+    const diagram = document.querySelector(".mermaid-diagram");
+    expect(diagram).toBeTruthy();
+
+    await user.hover(diagram!);
+    expect(expand).toBeVisible();
+
+    await user.click(expand);
+
+    const overlay = screen.getByRole("dialog", { name: "Fullscreen diagram" });
+    expect(overlay).toHaveClass("bg-white");
+    expect(screen.queryByRole("button", { name: "View fullscreen" })).not.toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: "Fullscreen diagram" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View fullscreen" })).toBeInTheDocument();
   });
 
   it("shows fallback for invalid mermaid without crashing", async () => {

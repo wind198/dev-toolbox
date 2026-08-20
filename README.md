@@ -19,6 +19,12 @@ A personal collection of browser-based developer utilities. Built with Next.js a
 | [URL Encoder/Decoder](/tools/url-encoder) | Encode and decode URL components with `encodeURIComponent` / `decodeURIComponent` |
 | [JSON Formatter](/tools/json-formatter) | Parse, validate, and pretty-print JSON |
 
+### Document Tools
+
+| Tool | Description |
+|------|-------------|
+| [Markdown Preview](/tools/markdown-preview) | Live GitHub-flavored Markdown preview with Mermaid diagrams (hover a diagram for fullscreen on a white background) |
+
 All tools support live conversion as you type and one-click copy for results.
 
 ## Tech Stack
@@ -26,6 +32,7 @@ All tools support live conversion as you type and one-click copy for results.
 - **Framework:** Next.js 16 (App Router, static export)
 - **UI:** React 19, Tailwind CSS 4, shadcn/ui
 - **Forms:** react-hook-form + Zod validation
+- **Markdown:** react-markdown, remark-gfm, mermaid
 - **Utilities:** lodash-es
 
 ## Getting Started
@@ -46,6 +53,8 @@ Open [http://localhost:3000](http://localhost:3000).
 | `pnpm start` | Serve production build |
 | `pnpm lint` | Run ESLint |
 | `pnpm type-check` | Run TypeScript checks |
+| `pnpm test` | Run Vitest in watch mode |
+| `pnpm test:run` | Run Vitest once |
 
 ## Project Structure
 
@@ -59,13 +68,16 @@ app/                          # Next.js App Router
 src/
 ├── components/
 │   ├── ToolLayout.tsx        # Shared layout for tool pages
+│   ├── markdown/             # MarkdownRenderer, MermaidDiagram, image lightbox
 │   └── tools/
 │       ├── <ToolName>.tsx    # Tool implementations
 │       └── shared/           # ResultCard, CopyButton, validations
 ├── data/tools.ts             # Tool registry (groups + metadata)
+├── lib/                      # mermaid init, SVG helpers, URL sanitization
 └── types/index.ts            # ToolId, Tool, Group types
 
 components/ui/                # shadcn/ui components
+assets/mock/sample.md         # Default Markdown Preview content
 ```
 
 ## Adding a New Tool
