@@ -33,4 +33,15 @@ export const toolGroups: Group[] = [
       },
     ],
   },
+  {
+    id: "document-tools",
+    name: "Document Tools",
+    tools: [
+      {
+        id: "markdown-preview",
+        name: "Markdown Preview",
+        description: "Live Markdown preview with Mermaid diagrams and GFM support",
+      },
+    ],
+  },
 ];

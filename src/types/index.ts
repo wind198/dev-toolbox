@@ -2,7 +2,8 @@ export type ToolId =
   | "case-converter"
   | "github-url-converter"
   | "url-encoder"
-  | "json-formatter";
+  | "json-formatter"
+  | "markdown-preview";
 
 export interface Tool {
   id: ToolId;
